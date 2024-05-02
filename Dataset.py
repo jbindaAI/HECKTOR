@@ -2,7 +2,6 @@ import pandas as pd
 from torch.utils.data import Dataset
 import torch
 import torchvision.transforms.functional as TF
-import mypickle as mp
 
 
 class CropData(Dataset):
@@ -109,7 +108,6 @@ class CropData(Dataset):
         return {
             "pid": pid,
             "crop_CT": crop_CT,
-            "crop_PT": crop_PT,
-            "crop_combine": crop,
+            "crop_PET": crop_PT,
             "labels": labels.to_numpy().astype(float),
         }

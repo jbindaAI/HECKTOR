@@ -66,8 +66,8 @@ class TwoHeadsBeast(LightningModule):
         return x
 
     def training_step(self, batch, batch_idx):
-        CT_crop = batch["CT"]
-        PET_crop = batch["PET"]
+        CT_crop = batch["crop_CT"]
+        PET_crop = batch["crop_PET"]
         labels = batch["labels"]
         # Check if all events are censored, if so, skip this batch
         # CoxPHLoss is not well defined in that case
@@ -86,8 +86,8 @@ class TwoHeadsBeast(LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        CT_crop = batch["CT"]
-        PET_crop = batch["PET"]
+        CT_crop = batch["crop_CT"]
+        PET_crop = batch["crop_PET"]
         labels = batch["labels"]
         # Check if all events are censored, if so, skip this batch
         if labels[:,1].sum() == 0:
