@@ -2,6 +2,8 @@ import pandas as pd
 from torch.utils.data import Dataset
 import torch
 import torchvision.transforms.functional as TF
+import numpy as np
+import random
 
 
 class CropData(Dataset):
@@ -11,17 +13,15 @@ class CropData(Dataset):
 
     def __init__(
         self,
-        crops_path="/home/ubuntu/Hecktor/TNM_prediction/crops/",
-        train_labels_file="/home/ubuntu/Hecktor/hecktor2022/hecktor2022_training/hecktor2022_patient_endpoint_training.csv",
-        test_labels_file="/home/ubuntu/Hecktor/hecktor2022/hecktor2022_testing/hecktor2022_endpoint_testing.csv",
+        crops_path="/home/dzban112/HECKTOR/Data/",
+        train_labels_file="/home/dzban112/HECKTOR/hecktor2022/hecktor2022_training/hecktor2022_patient_endpoint_training.csv",
+        test_labels_file="/home/dzban112/HECKTOR/hecktor2022/hecktor2022_testing/hecktor2022_endpoint_testing.csv",
         transform = None,
-        channels = ["CT", "PT"],
         train=True,
     ):
         self.transform = transform
         self.train = train
         self.crops_path = crops_path
-        self.channels = channels
     
         # Load RFS scores
         self.train_labels = pd.read_csv(train_labels_file)
@@ -39,18 +39,17 @@ class CropData(Dataset):
 
         def get_mean_std():
             """
-            Get mean and std of CT images in training set
+            Get mean and std of CT & PET images in training set
             """            
             mean = {"ct": [], "pt": []}
             std = {"ct": [], "pt": []}
             for pid in self.train_pids:
-                ct = torch.load(f"{self.crops_path}/training/{pid}__CT.pt")
-                pt = torch.load(f"{self.crops_path}/training/{pid}__PT.pt")
+                ct = torch.load(f"{self.crops_path}/train_data/crops_CT/{pid}.pt")
+                pt = torch.load(f"{self.crops_path}/train_data/crops_PET/{pid}.pt")
                 mean["ct"].append(ct.mean())
                 mean["pt"].append(pt.mean())
                 std["ct"].append(ct.std())
                 std["pt"].append(pt.std())
-            # return torch.tensor(ct_mean).mean(), torch.tensor(ct_std).mean()
             return {
                 "mean": {"ct": torch.tensor(mean["ct"]).mean(), "pt": torch.tensor(mean["pt"]).mean()},
                 "std": {"ct": torch.tensor(std["ct"]).mean(), "pt": torch.tensor(std["pt"]).mean()}
@@ -59,12 +58,12 @@ class CropData(Dataset):
         # If the file mean_std_CT.pt exists, load it 
         # Otherwise, calculate mean and std and save it
         try:
-            self.mean, self.std = torch.load("mean_std_CT.pt")
+            self.mean_std = torch.load("mean_std.pt")
         except FileNotFoundError:
             print("calculating")
             mean_std = get_mean_std()
             self.mean_std = mean_std
-            torch.save((self.ct_mean, self.ct_std), "mean_std_CT.pt")
+            torch.save(mean_std, "mean_std.pt")
 
     def __len__(self):
         if self.train:
@@ -76,13 +75,13 @@ class CropData(Dataset):
         if self.train:
             pid = self.train_pids[idx]
             labels = self.train_labels.iloc[idx]
-            crop_CT = torch.load(f"{self.crops_path}/training/{pid}__CT.pt")
-            crop_PT = torch.load(f"{self.crops_path}/training/{pid}__PT.pt")
+            crop_CT = torch.load(f"{self.crops_path}/train_data/crops_CT/{pid}.pt")
+            crop_PT = torch.load(f"{self.crops_path}/train_data/crops_PET/{pid}.pt")
         else:
             pid = self.test_pids[idx]
             labels = self.test_labels.iloc[idx]
-            crop_CT = torch.load(f"{self.crops_path}/testing/{pid}__CT.pt")
-            crop_PT = torch.load(f"{self.crops_path}/testing/{pid}__PT.pt")
+            crop_CT = torch.load(f"{self.crops_path}/test_data/crops_CT/{pid}.pt")
+            crop_PT = torch.load(f"{self.crops_path}/test_data/crops_PET/{pid}.pt")
 
         # Standard seems to be to normalize CT with dataset mean and std
         # and normalize PT image with its own mean and std
@@ -94,16 +93,20 @@ class CropData(Dataset):
             crop_PT, mean=crop_PT.mean(), std=crop_PT.std()
         )
 
-        if len(self.channels) == 2:
-            crop = torch.stack([crop_CT, crop_PT])
-        else:
-            if self.channels[0] == "CT":
-                crop = crop_CT.unsqueeze(0)
-            else:
-                crop = crop_PT.unsqueeze(0)
+        slices = np.linspace(13, 18, 6).astype(int)
+        slice_ = random.choice(slices) # one of the middle slices [14, 15, 16, 17, 18] is chosen.
+        crop_CT = crop_CT[slice_, :, :].unsqueeze(0)
+        crop_PT = crop_PT[slice_, :, :].unsqueeze(0)
+        
+        # As ViT model requires 3 color channels,
+        # code below makes 2 more channels by coping original channel.
+        crop_CT = crop_CT.repeat(3,1,1)
+        crop_PT = crop_PT.repeat(3,1,1)
+        
         # Apply transforms
         if self.transform:
-            crop = self.transform(crop)
+            crop_CT = self.transform(crop_CT)
+            crop_PT = self.transform(crop_PT)
 
         return {
             "pid": pid,

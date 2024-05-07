@@ -81,7 +81,7 @@ class TwoHeadsBeast(LightningModule):
             prog_bar=True,
             on_step=False,
             on_epoch=True,
-            sync_dist=False
+            sync_dist=True
         )
         return loss
 
@@ -95,7 +95,7 @@ class TwoHeadsBeast(LightningModule):
         logits = self(CT_crop, PET_crop)
         loss = self.criterion(logits, labels)
         self.log(
-            "val_loss", loss, prog_bar=True, sync_dist=False
+            "val_loss", loss, prog_bar=True, sync_dist=True
         )
         return loss
 
