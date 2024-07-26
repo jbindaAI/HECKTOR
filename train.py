@@ -1,149 +1,150 @@
 # IMPORT PACKAGES
-from Dataset import CropData
-from Model import TwoHeadsBeast
-from torch.utils.data import DataLoader
-from torch.utils.data import random_split
+from HECKTOR_Dataset import Mode, Modality
+from HECKTOR_DataModule import HECKTOR_DataModule
+from HECKTOR_Model import HECKTOR_Model
+
+import math
 import torch
-from pytorch_lightning.loggers import TensorBoardLogger
-#from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+import wandb
+import pickle
+from typing import Literal, Union, List
 import pytorch_lightning as pl
-from torchvision.transforms import v2
-#from lifelines.utils import concordance_index
-#import wandb
-import argparse
-#from monai import transforms as T
-def main():
-    # DEFINE PARAMETERS
-    epochs = 40
-    milestones = [15, 30]
-    lr_schedule = "fixed"
-    channels = ["CT", "PT"]
-    select_transforms = ["crop"]
-    tb_logs_path = "/home/dzban112/HECKTOR/tb_logs"
-    checkpoints_path = "/home/dzban112/HECKTOR/checkpoints"
-    MODEL_NR = 1
-    
-    # CREATE THE PARSER
-    parser = argparse.ArgumentParser(description="Train an end-to-end model")
-    parser.add_argument(
-        "--learning_rate", type=float, default=1e-3, help="Learning rate for the model"
-    )
-    parser.add_argument(
-        "--tie_method",
-        type=str,
-        default="breslow",
-        help='Tie method can be either "breslow" or "efron"',
-    )
-    parser.add_argument(
-        "--patience",
-        type=float,
-        default=5,
-        help="Patience for learning rate annealing",
-    )
-    parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=16,
-        help="Batch size",
-    )
-    parser.add_argument(
-        "--val_split",
-        type=int,
-        default=42,
-        help="Random seed for validation split",
-    )
-    parser.add_argument(
-        "--trainable_layers",
-        type=int,
-        default=10,
-        help="When fine-tuning a pretrained model, how many layers to unfreeze",
-    )
-    
-    args = parser.parse_args()
-    
-    learning_rate = args.learning_rate
-    tie_method = args.tie_method
-    patience = args.patience
-    batch_size = args.batch_size
-    val_split = args.val_split
-    trainable_layers = args.trainable_layers
-    
-    print(f"Learning rate: {learning_rate}")
-    print(f"Tie method: {tie_method}")
-    print(f"Deform probability: {deform_prob}")
-    print(f"Intensity probability: {intensity_prob}")
-    print(f"Patience: {patience}")
-    print(f"Batch size: {batch_size}")
-    print(f"Validation split: {val_split}")
-    print(f"Number of trainable layers: {trainable_layers}")
-    
-    torch.set_float32_matmul_precision("medium")
-    lr_monitor = LearningRateMonitor(logging_interval="step")
-    
-    # DEFINE AUGMENTATIONS
-    train_transforms = T.Compose(v2.Resize([224, 224]))
-    test_transforms = T.Compose(v2.Resize([224, 224]))
-    
-    # DEFINE DATA SPLITS
-    all_train_data = CropData(train=True, transform=train_transforms, channels=channels)
-    # Set a seed for the random number generator and split data into training and validational.
-    torch.manual_seed(val_split)
-    train_dataset, val_dataset = random_split(all_train_data, [0.8, 0.2])
-    val_dataset.transform = test_transforms
-    # Make an instance of test data
-    test_dataset = CropData(train=False, transform=test_transforms, channels=channels)
-    
-    # DATA LOADERS
-    train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True, num_workers=8
-    )
-    
-    val_loader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=False, num_workers=8
-    )
-    
-    test_loader = DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=False, num_workers=8
-    )
-    
-    # MAKE AN INSTANCE OF THE MODEL
-    model = TwoHeadsBeast(
-        milestones=milestones,
-        learning_rate=learning_rate,
-        tie_method=tie_method,
-        lr_schedule=lr_schedule,
-        patience=patience,
-        trainable_layers=trainable_layers,
-        dropout=dropout
-    )
-    
-    # saves top-K checkpoints based on "val_loss" metric
-    checkpoint_callback = ModelCheckpoint(
-        save_top_k=1,
-        monitor="val_loss",
-        mode="min",
+from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.callbacks import LearningRateMonitor
+from lifelines.utils import concordance_index
+
+
+## HYPERPARAMETERS:
+MODEL_NR:int = 25.2
+LOCAL:bool = False
+SAVE_TOP_CKPTS:int = 0
+WANDB_PROJECT:str = "HECKTOR"
+DO_CV:bool = True # Whether perform 5-Fold Cross-Validation.
+FULL_TRAINING:bool = False # Whether train model on the whole training set, without CV. 
+MODALITY:Modality = Modality.CT
+MODEL_TYPE:Literal["dino_vits8", "dino_vitb8", "dino_vits16", "dino_vitb16"] = "dino_vits8"
+TRAINABLE_LAYERS:Union[int, Literal["all"]] = 0
+EPOCHS:int = 25
+BATCH_SIZE:int = 16
+MAX_LR:float = 6e-5
+LR_ANNEAL_STRATEGY:Literal["linear", "cos"] = "cos"
+INIT_DIV_FACTOR:int = 100
+FINAL_DIV_FACTOR:int = 100
+PCT_START:float = 0.30
+TIE_METHOD:Literal["breslow", "efron"] = "breslow"
+SELECTED_TRAIN_TRANSFORMS:List[Literal["elastic", "crop", "contrast", "histogram"]] = ["elastic", "histogram", "crop"]
+BCKB_DROPOUT:float = 0.12
+NUM_WORKERS:int = 8
+
+if MODALITY.value in ["CT", "PET"]: # IN_CHANS specifies if we use only CT/PET images in training or both.
+    IN_CHANS:int = 1
+elif MODALITY.value == "both":
+    IN_CHANS:int = 2
+
+
+if LOCAL:
+    DATA_PATH=""
+    checkpoints_path=""
+else:
+    DATA_PATH="/home/dzban112/HECKTOR/Data/"
+    checkpoints_path="/home/dzban112/HECKTOR/ckpt/"
+
+def train_model(fold:Union[int, Literal["all"]] = 1):
+    """
+    If fold is integer, then model is trained on a specified CV fold and evaluated on a corresponding validational fold.
+    When fold == "all", then model is trained using all training examples without evaluation on separate validational fold.
+    """
+    # Getting value of training steps:
+    with open(DATA_PATH+f"train_data/train_fold_{fold}.pkl", "rb") as f:
+        n_train_examples = len(pickle.load(f))
+        steps_per_epoch = math.ceil(n_train_examples/BATCH_SIZE)
+        total_steps = steps_per_epoch*EPOCHS
+
+    # add a checkpoint callback that saves the model with the lowest validation loss
+    checkpoint_name = f"{MODEL_TYPE}_{MODEL_NR}_{fold}"
+    checkpoint_callback = pl.callbacks.ModelCheckpoint(
         dirpath=checkpoints_path,
-        filename="best-{epoch:02d}",
+        filename=checkpoint_name,
+        save_top_k=1 if fold=="all" else SAVE_TOP_CKPTS,
+        monitor=None if fold=="all" else "val_C-index",
+        mode="max",
+        enable_version_counter=True
     )
+
+    # Logger:
+    wandb_logger = WandbLogger(project=WANDB_PROJECT, name=f"{MODEL_TYPE}_{MODEL_NR}_fold_{fold}", job_type='train')
+    wandb_logger.experiment.config.update({
+        "model_nr": MODEL_NR,
+        "local": LOCAL,
+        "save_top_ckpts": SAVE_TOP_CKPTS,
+        "modality": MODALITY,
+        "model_type": MODEL_TYPE,
+        "in_chans": IN_CHANS,
+        "trainable_layers": TRAINABLE_LAYERS,
+        "epochs": EPOCHS,
+        "batch_size": BATCH_SIZE,
+        "max_lr": MAX_LR,
+        "lr_anneal_strategy": LR_ANNEAL_STRATEGY,
+        "init_div_factor": INIT_DIV_FACTOR,
+        "final_div_factor": FINAL_DIV_FACTOR,
+        "pct_start": PCT_START,
+        "tie_method": TIE_METHOD,
+        "selected_train_transforms": SELECTED_TRAIN_TRANSFORMS,
+        "backbone_dropout": BCKB_DROPOUT,
+        "num_workers": NUM_WORKERS
+    })
+
+    # Cleaning cache:
+    torch.cuda.empty_cache()
     
-    
-    # TRAINING
-    trainer = pl.Trainer(
-        accelerator="gpu",
-        devices=[0],
-        max_epochs=epochs,
-        logger=TensorBoardLogger(tb_logs_path, name=f"CT_PET_model_{MODEL_NR}"),
-        callbacks=[checkpoint_callback, lr_monitor],
-        strategy="ddp_find_unused_parameters_true",
-        log_every_n_steps=6,
+    torch.set_float32_matmul_precision('medium')
+    lr_monitor = LearningRateMonitor(logging_interval='step')
+    trainer = pl.Trainer(accelerator="gpu", devices=1, 
+                         precision=32, max_epochs=EPOCHS,
+                         callbacks=[checkpoint_callback, lr_monitor],
+                         logger=wandb_logger,
+                         log_every_n_steps=20,
+                         limit_val_batches=0.0 if fold=="all" else 1.0
+                        )
+
+    model = HECKTOR_Model(
+        model_type=MODEL_TYPE,
+        in_chans=IN_CHANS,
+        trainable_layers=TRAINABLE_LAYERS,
+        backbone_dropout=BCKB_DROPOUT,
+        max_lr=MAX_LR,
+        tie_method=TIE_METHOD,
+        lr_anneal_strategy=LR_ANNEAL_STRATEGY,
+        init_div_factor=INIT_DIV_FACTOR,
+        final_div_factor=FINAL_DIV_FACTOR,
+        total_steps=total_steps,
+        pct_start=PCT_START
     )
-    
-    trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader)
-    
+
+    dm = HECKTOR_DataModule(
+        fold=fold,
+        data_path=DATA_PATH,
+        batch_size=BATCH_SIZE,
+        num_workers=NUM_WORKERS,
+        selected_train_transforms=SELECTED_TRAIN_TRANSFORMS,
+        modality=MODALITY
+    )
+
+    trainer.fit(model, dm)
+
+    # Free up memory
     del trainer
     del model
-    torch.cuda.empty_cache()
+    del dm
+    
+    #Finishing run
+    wandb.finish()
 
-if __name__ == "__main__":
-    main()
+
+if DO_CV:
+    for fold in range(1,2): # Iteration over folds
+        train_model(fold=fold)
+        
+if FULL_TRAINING:
+    train_model(fold="all")
+    

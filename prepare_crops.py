@@ -56,9 +56,9 @@ def extract_nodule(patient_id, margin, maskPath, imagePath):
         #Center of bbox is computed by averaging extreme indexes on each of dimmensions.
         cbbox = [round((bbox[i][0]+bbox[i][1])/2) for i in range(3)]
         slices = (
-                slice(cbbox[0]-margin, cbbox[0]+margin),
-                slice(cbbox[1]-margin, cbbox[1]+margin),
-                slice(cbbox[2]-margin, cbbox[2]+margin)
+                slice(max(cbbox[0]-margin, 0), min(cbbox[0]+margin, CT.shape[0]-1)),
+                slice(max(cbbox[1]-margin, 0), min(cbbox[1]+margin, CT.shape[1]-1)),
+                slice(max(cbbox[2]-margin, 0) , min(cbbox[2]+margin, CT.shape[2]-1))
              )
         #Cropping a nodule volume from res_data by defined slices tupple.
         crop_CT = torch.Tensor(CT[slices])
