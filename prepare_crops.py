@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import torch
 
 # Defining data paths:
-MODE = "train_data"
+MODE = "test_data"
 
 if MODE == "test_data":
     imagePath = '/home/dzban112/HECKTOR/hecktor2022/hecktor2022_testing/imagesTs_resampled/'
@@ -43,7 +43,9 @@ def load_image(id, maskPath, imagePath):
 
 def extract_nodule(patient_id, margin, maskPath, imagePath):
     CT, PET, mask = load_image(patient_id, maskPath, imagePath)
-    segmentation = np.where(mask != 0)
+    if 1 not in np.unique(mask):
+        raise Exception(f"Mask contains only following labels: {np.unique(mask)}")
+    segmentation = np.where(mask == 1)
     bbox = 0, 0, 0, 0
     if len(segmentation) != 0:
         z_min = int(np.min(segmentation[0]))
@@ -64,6 +66,10 @@ def extract_nodule(patient_id, margin, maskPath, imagePath):
         crop_CT = torch.Tensor(CT[slices])
         crop_PET = torch.Tensor(PET[slices])
         crop_mask = torch.Tensor(mask[slices])
+        if crop_CT[50,:,:].sum().item()==0:
+            raise Exception("Defective CT image. Filled with zeros at the central slice.")
+        if crop_PET[50,:,:].sum().item()==0:
+            raise Exception("Defective PET image. Filled with zeros at the central slice.")
     return crop_CT, crop_PET, crop_mask
 
 
@@ -90,7 +96,7 @@ def prepare_data(IDs, margin, save_path, maskPath, imagePath):
             torch.save(crop_PET.clone(), f"{save_path}/crops_PET/{patient_id}.pt")
             torch.save(crop_mask.clone(), f"{save_path}/crops_mask/{patient_id}.pt")
         except Exception as e:
-            print(f"Something wrong for patient: {patient_id}")
+            print(f"Error when processing patient: {patient_id}")
             print(e)
     return "Done"
 

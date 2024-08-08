@@ -2,10 +2,11 @@ from pytorch_lightning import LightningModule
 from typing import Literal, Union
 import torch
 from torch import nn
-from torch.optim.lr_scheduler import StepLR, MultiStepLR, ReduceLROnPlateau
 from lassonet1.lassonet.cox import CoxPHLoss
 from DINO_ViT_source.vision_transformer import instantiate_model, weights_map
 from lifelines.utils import concordance_index
+from sklearn.decomposition import PCA
+from HECKTOR_Dataset import Modality
 
 
 def set_encoder_dropout_p(module, dropout_p):
@@ -20,6 +21,7 @@ class HECKTOR_Model(LightningModule):
         self,
         model_type:Literal["dino_vits8", "dino_vitb8", "dino_vits16", "dino_vitb16"],
         in_chans:int=1,
+        modality:Modality=Modality.CT,
         trainable_layers:Union[int, Literal["all"]]="all",
         backbone_dropout:float=0.0,
         max_lr:float=1e-3,
@@ -34,6 +36,7 @@ class HECKTOR_Model(LightningModule):
         self.save_hyperparameters()
         self.model_type=model_type
         self.in_chans=in_chans
+        self.modality=modality
         self.trainable_layers=trainable_layers
         self.backbone_dropout=backbone_dropout
         self.max_lr=max_lr
@@ -43,7 +46,7 @@ class HECKTOR_Model(LightningModule):
         self.final_div_factor=final_div_factor
         self.total_steps=total_steps
         self.pct_start=pct_start
-
+        
         self.criterion = CoxPHLoss(tie_method)
 
         ## Backbone setting:
@@ -77,12 +80,31 @@ class HECKTOR_Model(LightningModule):
         self.val_preds = []
         self.val_labels = []
         
-    def forward(self, imgs):
+        
+    def forward(self, imgs, extract_hidden_states=False):
         x = self.backbone(imgs)
+        if extract_hidden_states:
+            return x
         x = self.mlp_head(x)
         return x
 
-    def common_step(self, batch):
+    def common_eval_step(self, batch):
+        crop_list = batch["crop"]
+        labels = batch["labels"]
+        slice_logits = []
+        for crop in crop_list:
+            logits = self.forward(crop)
+            slice_logits.append(logits)
+        logits = torch.stack(slice_logits)
+        logits = torch.mean(logits, dim=0)
+        # Check if all events are censored, if so, skip this batch
+        # CoxPHLoss is not well defined in that case
+        if labels[:,1].sum() == 0:
+            return [logits]
+        loss = self.criterion(logits, labels)
+        return [logits, loss]
+
+    def common_train_step(self, batch):
         crops = batch["crop"]
         labels = batch["labels"]
         logits = self.forward(crops)
@@ -103,7 +125,7 @@ class HECKTOR_Model(LightningModule):
         return c_index
 
     def training_step(self, batch, batch_idx):
-        results = self.common_step(batch)
+        results = self.common_train_step(batch)
         if len(results) == 1:
             return None
         else:
@@ -112,7 +134,7 @@ class HECKTOR_Model(LightningModule):
             return loss
 
     def validation_step(self, batch, batch_idx):
-        results = self.common_step(batch)
+        results = self.common_eval_step(batch)
         logits = results[0]
         # Accumulating logits and labels for c-index computation at the end of validation.
         self.val_preds.append(logits)
@@ -134,7 +156,7 @@ class HECKTOR_Model(LightningModule):
         self.val_labels.clear()
 
     def test_step(self, batch, batch_idx):
-        results = self.common_step(batch)
+        results = self.common_eval_step(batch)
         logits = results[0]
         # Accumulating logits and labels for c-index computation at the end of testing.
         self.test_preds.append(logits)
@@ -171,3 +193,65 @@ class HECKTOR_Model(LightningModule):
             'interval': 'step'
         }
         return [optimizer], [scheduler]
+
+
+class PCA_HECKTOR_Model(HECKTOR_Model):
+    def __init__(
+        self,
+        ckpt_path: str,
+        PCA_factors_path: str,
+        backbone_dropout:float=0.0,
+        max_lr:float=1e-3,
+        tie_method:Literal["breslow", "efron"]="breslow",
+        lr_anneal_strategy:Literal["linear", "cos"]="cos",
+        init_div_factor:int=100,
+        final_div_factor:int=10000,
+        total_steps:int=100,
+        pct_start:float=0.10
+    ):
+        # Load the already finetuned model from the checkpoint
+        model = HECKTOR_Model.load_from_checkpoint(ckpt_path)
+        # Initialize the parent class (HECKTOR_Model)
+        super().__init__(
+            model_type=model.hparams.model_type,
+            in_chans=model.hparams.in_chans,
+            modality=model.hparams.modality,
+            trainable_layers=0,
+            backbone_dropout=backbone_dropout,
+            max_lr=max_lr,
+            tie_method=tie_method,
+            lr_anneal_strategy=lr_anneal_strategy,
+            init_div_factor=init_div_factor,
+            final_div_factor=final_div_factor,
+            total_steps=total_steps,
+            pct_start=pct_start
+        )
+
+        # Taking finetuned backbone
+        self.backbone = model.backbone
+
+        # Load PCA components and mean
+        pca_data = torch.load(PCA_factors_path)
+        self.pca_components = pca_data['components']
+        self.pca_mean = pca_data['mean']
+
+        # Freeze the backbone parameters of the already finetuned model
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+
+        # Replace the MLP head with a new one that accepts reduced PCA features
+        self.mlp_head = nn.Sequential(nn.Linear(self.pca_components.shape[0], 1))
+
+    def forward(self, imgs):
+        # Forward pass through the backbone
+        x = self.backbone(imgs)
+
+        # Apply PCA transformation
+        x = x - self.pca_mean.to(self.device)
+        x = torch.matmul(x, self.pca_components.T.to(self.device))
+
+        # Forward pass through the new MLP head
+        x = self.mlp_head(x)
+        return x
+
+

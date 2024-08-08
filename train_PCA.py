@@ -7,40 +7,32 @@ import math
 import torch
 import wandb
 import pickle
-from typing import Literal, Union, List
+from typing import Literal, Union, List, Optional
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor
 from lifelines.utils import concordance_index
 
-
-## HYPERPARAMETERS:
-MODEL_NR:int = 5
+MODEL_NR:int = 6
+FINETUNED_MODEL:str = "dino_vitb8_6"
+MODEL_VERSION:Optional[Literal['v1', 'v2']] = None
+N_COMPONENTS:int = 180 # Only specified to be logged on W&B.
 LOCAL:bool = False
 SAVE_TOP_CKPTS:int = 3
-WANDB_PROJECT:str = "HECKTOR"
+WANDB_PROJECT:str = "HECKTOR_PCA"
 DO_CV:bool = True # Whether perform 5-Fold Cross-Validation.
 FULL_TRAINING:bool = True # Whether train model on the whole training set, without CV. 
-MODALITY:Modality = Modality.MERGED
-MODEL_TYPE:Literal["dino_vits8", "dino_vitb8", "dino_vits16", "dino_vitb16"] = "dino_vitb8"
-TRAINABLE_LAYERS:Union[int, Literal["all"]] = "all"
-EPOCHS:int = 25
+EPOCHS:int = 5
 BATCH_SIZE:int = 16
-MAX_LR:float = 3e-4
+MAX_LR:float = 5e-3
 LR_ANNEAL_STRATEGY:Literal["linear", "cos"] = "cos"
 INIT_DIV_FACTOR:int = 50
-FINAL_DIV_FACTOR:int = 10000
-PCT_START:float = 0.30
+FINAL_DIV_FACTOR:int = 100
+PCT_START:float = 0.1
 TIE_METHOD:Literal["breslow", "efron"] = "breslow"
 SELECTED_TRAIN_TRANSFORMS:List[Literal["elastic", "histogram"]] = ["elastic", "histogram"]
 BCKB_DROPOUT:float = 0.12
 NUM_WORKERS:int = 8
-
-if MODALITY.value in ["CT", "PET", "merged"]: # IN_CHANS specifies how many channels architecture should accept.
-    IN_CHANS:int = 1
-elif MODALITY.value == "both":
-    IN_CHANS:int = 2
-
 
 if LOCAL:
     DATA_PATH=""
@@ -49,8 +41,11 @@ else:
     DATA_PATH="/home/dzban112/HECKTOR/Data/"
     checkpoints_path="/home/dzban112/HECKTOR/ckpt/"
 
-def train_model(fold:Union[int, Literal["all"]] = 1):
+
+def train_PCA_model(fold:Union[int, Literal["all"]] = 1):
     """
+    ! Method designed to retrain only MLP HEAD of finetuned ViT utilizing PCA reduction of features between encoder and MLP HEAD. !
+    
     If fold is integer, then model is trained on a specified CV fold and evaluated on a corresponding validational fold.
     When fold == "all", then model is trained using all training examples without evaluation on separate validational fold.
     """
@@ -61,26 +56,24 @@ def train_model(fold:Union[int, Literal["all"]] = 1):
         total_steps = steps_per_epoch*EPOCHS
 
     # add a checkpoint callback that saves the model with the highest validation concordance index.
-    checkpoint_name = f"{MODEL_TYPE}_{MODEL_NR}_{fold}"
+    checkpoint_name = f"PCA_{FINETUNED_MODEL}_{MODEL_NR}_{fold}"
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         dirpath=checkpoints_path,
         filename=checkpoint_name,
         save_top_k=1 if fold=="all" else SAVE_TOP_CKPTS,
-        monitor=None if fold=="all" else "val_loss",
-        mode="min",
+        monitor=None if fold=="all" else "val_C-index",
+        mode="max",
         enable_version_counter=True
     )
 
     # Logger:
-    wandb_logger = WandbLogger(project=WANDB_PROJECT, name=f"{MODEL_TYPE}_{MODEL_NR}_fold_{fold}", job_type='train')
+    wandb_logger = WandbLogger(project=WANDB_PROJECT, name=f"{FINETUNED_MODEL}_{MODEL_NR}_fold_{fold}_PCA", job_type='train')
     wandb_logger.experiment.config.update({
         "model_nr": MODEL_NR,
+        "finetuned model": FINETUNED_MODEL,
+        "n_components": N_COMPONENTS,
         "local": LOCAL,
         "save_top_ckpts": SAVE_TOP_CKPTS,
-        "modality": MODALITY,
-        "model_type": MODEL_TYPE,
-        "in_chans": IN_CHANS,
-        "trainable_layers": TRAINABLE_LAYERS,
         "epochs": EPOCHS,
         "batch_size": BATCH_SIZE,
         "max_lr": MAX_LR,
@@ -103,15 +96,13 @@ def train_model(fold:Union[int, Literal["all"]] = 1):
                          precision=32, max_epochs=EPOCHS,
                          callbacks=[checkpoint_callback, lr_monitor],
                          logger=wandb_logger,
-                         log_every_n_steps=20,
+                         log_every_n_steps=5,
                          limit_val_batches=0.0 if fold=="all" else 1.0
                         )
-
-    model = HECKTOR_Model(
-        model_type=MODEL_TYPE,
-        in_chans=IN_CHANS,
-        modality=MODALITY,
-        trainable_layers=TRAINABLE_LAYERS,
+    
+    model = PCA_HECKTOR_Model(
+        ckpt_path=checkpoints_path+FINETUNED_MODEL+f"_{fold}{MODEL_VERSION if MODEL_VERSION is not None else ''}.ckpt",
+        PCA_factors_path=DATA_PATH+f"train_data/PCA_factors/{FINETUNED_MODEL}_fold_{fold}.pt",
         backbone_dropout=BCKB_DROPOUT,
         max_lr=MAX_LR,
         tie_method=TIE_METHOD,
@@ -128,7 +119,7 @@ def train_model(fold:Union[int, Literal["all"]] = 1):
         batch_size=BATCH_SIZE,
         num_workers=NUM_WORKERS,
         selected_train_transforms=SELECTED_TRAIN_TRANSFORMS,
-        modality=MODALITY
+        modality=model.hparams.modality
     )
 
     trainer.fit(model, dm)
@@ -144,8 +135,9 @@ def train_model(fold:Union[int, Literal["all"]] = 1):
 
 if DO_CV:
     for fold in range(1,6): # Iteration over folds
-        train_model(fold=fold)
+        train_PCA_model(fold)
         
         
 if FULL_TRAINING:
-    train_model(fold="all")
+    train_PCA_model(fold="all")
+    
