@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hecktor-survival"
+version = "0.1.0"
+description = "PyTorch Lightning pipeline for HECKTOR survival analysis."
+authors = [
+    { name = "Jakub Binda", email = "binkuba@gmail.com" }
+]
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "torch",
+    "torchvision",
+    "pytorch-lightning",
+    "monai",
+    "wandb",
+    "numpy",
+    "scikit-learn",
+    "pandas",
+    "lifelines",
+    "transformers",
+    "sortedcontainers",
+    "simpleitk",
+    "seaborn",
+    "matplotlib",
+]
+
+[project.urls]
+Homepage = "https://github.com/jbindaAI/HECKTOR"
+
+[tool.setuptools.packages.find]
+where = ["src"]
