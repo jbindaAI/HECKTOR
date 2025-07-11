@@ -1,9 +1,9 @@
 import pytorch_lightning as pl
 from typing import Literal, Union, Optional
 from torch.utils.data import DataLoader, Dataset
-import monai.transforms as mt
 
-from lightning_modules.dataset import HECKTOR_Dataset
+from hecktor_survival.dataset.dataset import HECKTOR_Dataset
+from hecktor_survival.dataset.augmentation import PairedRandom2DTransform
 
 
 class HECKTOR_DataModule(pl.LightningDataModule):
@@ -11,7 +11,7 @@ class HECKTOR_DataModule(pl.LightningDataModule):
         self,
         data_path,
         bbox_or_centroid: Literal["bbox", "centroid"],
-        fold: Union[int, Literal["all"]] = 1,
+        fold: int = 1,
         batch_size: int = 32,
         num_workers: int = 8,
         modality: Literal["CT", "PET", "Merged"] = "CT"
@@ -35,7 +35,6 @@ class HECKTOR_DataModule(pl.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.modality = modality
-        self.has_val = fold != "all"
         self.train_ds: Optional[Dataset] = None
         self.val_ds: Optional[Dataset] = None
         self.test_ds: Optional[Dataset] = None
@@ -46,30 +45,27 @@ class HECKTOR_DataModule(pl.LightningDataModule):
         Sets up datasets for different stages.
         """
         if stage == "fit" or stage is None:
-            train_3D_transforms = mt.Compose([
-                mt.RandFlipd(keys=["CT", "PET"], prob=0.5, spatial_axis=2, allow_missing_keys=True),
-                mt.RandAffined(keys=["CT", "PET"], prob=0.7, rotate_range=(0.1,0.1,0.1), allow_missing_keys=True),
-                mt.RandGaussianNoised(keys=["PET"], prob=0.2, allow_missing_keys=True)
-                ])
-
             # Train DS
             self.train_ds = HECKTOR_Dataset(
                 data_path=self.data_path,
                 bbox_or_centroid=self.bbox_or_centroid,
-                monai_3D_transform=train_3D_transforms,
                 fold=self.fold,
                 mode="train",
-                modality=self.modality
+                modality=self.modality,
+                normalize_imgs=True,
+                transforms=PairedRandom2DTransform(image_size=(224,224)),
+                slice_strategy="random"
             )
-            # Optional Val DS
-            if self.has_val:
-                self.val_ds = HECKTOR_Dataset(
-                    data_path=self.data_path,
-                    bbox_or_centroid=self.bbox_or_centroid,
-                    monai_3D_transform=None,
-                    fold=self.fold,
-                    mode="val",
-                    modality=self.modality
+            # Val DS
+            self.val_ds = HECKTOR_Dataset(
+                data_path=self.data_path,
+                bbox_or_centroid=self.bbox_or_centroid,
+                fold=self.fold,
+                mode="val",
+                modality=self.modality,
+                normalize_imgs=True,
+                transforms=None,
+                slice_strategy="center"
                 )
 
         if stage == "test" or stage is None:
@@ -77,10 +73,12 @@ class HECKTOR_DataModule(pl.LightningDataModule):
             self.test_ds = HECKTOR_Dataset(
                 data_path=self.data_path,
                 bbox_or_centroid=self.bbox_or_centroid,
-                monai_3D_transform=None,
                 fold=self.fold,
                 mode="test",
-                modality=self.modality
+                modality=self.modality,
+                normalize_imgs=True,
+                transforms=None,
+                slice_strategy="center"
             )
 
     def train_dataloader(self) -> DataLoader:
@@ -98,14 +96,12 @@ class HECKTOR_DataModule(pl.LightningDataModule):
         """
         Returns DataLoader for validation set.
         """
-        if self.has_val and self.val_ds is not None:
-            return DataLoader(
+        return DataLoader(
                 self.val_ds,
                 shuffle=False,
                 batch_size=self.batch_size,
                 num_workers=self.num_workers
             )
-        return DataLoader([], batch_size=self.batch_size, num_workers=self.num_workers)
 
     def test_dataloader(self) -> DataLoader:
         """

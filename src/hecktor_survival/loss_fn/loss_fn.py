@@ -7,7 +7,7 @@ __all__ = ["CoxPHLoss", "concordance_index"]
 import torch
 from sortedcontainers import SortedList
 
-from loss_fn.loss_utils import log_substract, scatter_logsumexp
+from hecktor_survival.loss_fn.loss_utils import log_substract, scatter_logsumexp
 
 
 class CoxPHLoss(torch.nn.Module):
